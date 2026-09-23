@@ -24,7 +24,7 @@ setup(
         'ffmpeg-progress-yield~=0.2.0',
         'requests~=2.27.1',
         'pycryptodomex~=3.12.0',
-        'yarl~=1.7.2',
+        'yarl~=1.9',
         'tqdm~=4.62.2'
     ],
     entry_points="""
