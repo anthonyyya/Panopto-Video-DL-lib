@@ -105,6 +105,11 @@ def hls_yield(session, m3u8_uri, preferred_quality):
         encryption_key_response = session.get(str(parsed_uri))
         encryption_data = encryption_key_response.content
 
+    if '#EXT-X-BYTERANGE' in m3u8_data:
+        # fMP4 HLS: segments are byte ranges of one file (Panopto, late 2026)
+        yield from byterange_yield(session, m3u8_data, relative_url)
+        return
+
     all_ts = TS_EXTENSION_REGEX.findall(m3u8_data)
     last_yield = 0
 
@@ -124,6 +129,45 @@ def hls_yield(session, m3u8_uri, preferred_quality):
                 last_yield = c
             except requests.exceptions.HTTPError as e:
                 print('ERROR: HLS downloading error due to {!r}, retrying.'.format(e))
+
+
+def byterange_yield(session, m3u8_data, relative_url):
+    """Yield EXT-X-MAP init + each EXT-X-BYTERANGE segment via HTTP Range requests."""
+    parts = []  # (uri, length, offset)
+    m = re.search(r'#EXT-X-MAP:URI="([^"]+)"(?:,BYTERANGE="(\d+)(?:@(\d+))?")?', m3u8_data)
+    if m:
+        parts.append((m.group(1), m.group(2) and int(m.group(2)), int(m.group(3) or 0)))
+    pending, next_off = None, 0
+    for line in m3u8_data.splitlines():
+        line = line.strip()
+        if line.startswith('#EXT-X-BYTERANGE:'):
+            length, _, off = line.split(':', 1)[1].partition('@')
+            pending = (int(length), int(off) if off else next_off)
+        elif line and not line.startswith('#'):
+            if pending:
+                parts.append((line, pending[0], pending[1]))
+                next_off = pending[0] + pending[1]
+            else:
+                parts.append((line, None, 0))
+            pending = None
+    total = len(parts)
+    for c, (uri, length, off) in enumerate(parts, 1):
+        url = yarl.URL(uri)
+        if not url.is_absolute():
+            url = relative_url.join(url)
+        hdr = {'Range': f'bytes={off}-{off + length - 1}'} if length else {}
+        for attempt in range(5):
+            try:
+                r = session.get(str(url), headers=hdr, timeout=60)
+                r.raise_for_status()
+                if length and len(r.content) != length:
+                    raise requests.exceptions.HTTPError(f'short read {len(r.content)}/{length}')
+                break
+            except requests.exceptions.RequestException as e:
+                print('ERROR: HLS downloading error due to {!r}, retrying.'.format(e))
+        else:
+            raise RuntimeError(f'Failed to download segment {c}/{total}')
+        yield {'bytes': r.content, 'total': total, 'current': c}
 
 
 def hls_downloader(m3u8_uri: str,

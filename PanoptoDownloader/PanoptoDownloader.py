@@ -18,6 +18,19 @@ REGEX = re.compile(
 PANOBF_FILE_REGEX = re.compile(r'.*\.panobf(\d+)$', re.IGNORECASE)
 
 
+def _is_byterange(uri: str) -> bool:
+    try:
+        master = requests.get(uri, timeout=30).text
+        variant = next((l.strip() for l in master.splitlines() if l.strip() and not l.startswith('#')), None)
+        if variant is None:
+            return '#EXT-X-BYTERANGE' in master
+        if not variant.startswith('http'):
+            variant = uri.rsplit('/', 1)[0] + '/' + variant
+        return '#EXT-X-BYTERANGE' in requests.get(variant, timeout=30).text
+    except requests.exceptions.RequestException:
+        return False
+
+
 def download(uri: str, output: str, callback: callable) -> None:
     """
     Download video from Panopto
@@ -38,7 +51,8 @@ def download(uri: str, output: str, callback: callable) -> None:
 
     if uri.endswith('master.m3u8') or PANOBF_FILE_REGEX.match(uri):
         use_ffmpeg = which('ffmpeg') is not None
-        if use_ffmpeg:
+        # ffmpeg's HLS demuxer truncates Panopto's fMP4 byte-range playlists to ~9s
+        if use_ffmpeg and not _is_byterange(uri):
             command = ['ffmpeg', '-f', 'hls', '-i', uri, '-c', 'copy', output]
             ff = FfmpegProgress(command)
             for progress in ff.run_command_with_progress():
